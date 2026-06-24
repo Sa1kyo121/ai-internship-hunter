@@ -11,6 +11,9 @@ from docx import Document
 from dotenv import load_dotenv
 from openai import OpenAI
 from pypdf import PdfReader
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
 
 load_dotenv()
@@ -187,6 +190,167 @@ def demo_analyze_resume(resume: str, job_description: str) -> dict[str, Any]:
         "resume_suggestions": suggestions,
         "tailored_bullets": tailored_bullets,
     }
+
+
+def build_demo_tailored_resume(resume: str, job_description: str, result: dict[str, Any]) -> str:
+    strong_matches = result.get("strong_matches", [])
+    tailored_bullets = result.get("tailored_bullets", [])
+
+    skills_line = ", ".join(strong_matches) if strong_matches else "Relevant technical and collaboration skills"
+    jd_keywords = ", ".join(title_keyword(keyword) for keyword in extract_keywords(job_description)[:8])
+    sections = parse_resume_sections(resume)
+    contact = sections["CONTACT"]
+
+    output_sections = []
+    if contact:
+        output_sections.append(contact)
+
+    output_sections.append(
+        "\n".join(
+            [
+                "PROFESSIONAL SUMMARY",
+                (
+                    f"Computer Science student with experience related to {skills_line}. "
+                    f"Prepared to contribute to internship work involving "
+                    f"{jd_keywords or 'technical problem solving, documentation, and teamwork'}."
+                ),
+            ]
+        )
+    )
+
+    for heading in ["EDUCATION", "TECHNICAL SKILLS", "SKILLS", "PROJECTS", "EXPERIENCE", "WORK EXPERIENCE"]:
+        if heading in sections and sections[heading]:
+            if heading in {"TECHNICAL SKILLS", "SKILLS"} and strong_matches:
+                section_text = sections[heading]
+                section_text += f"\nTargeted Skills: {skills_line}"
+                output_sections.append(section_text)
+            else:
+                output_sections.append(sections[heading])
+
+    if tailored_bullets:
+        bullets = "\n".join(f"- {bullet}" for bullet in tailored_bullets[:3])
+        output_sections.append(f"TARGETED HIGHLIGHTS\n{bullets}")
+
+    used_sections = {"CONTACT", "EDUCATION", "TECHNICAL SKILLS", "SKILLS", "PROJECTS", "EXPERIENCE", "WORK EXPERIENCE"}
+    for heading, text in sections.items():
+        if heading not in used_sections and text:
+            output_sections.append(text)
+
+    return "\n\n".join(output_sections).strip()
+
+
+def parse_resume_sections(resume: str) -> dict[str, str]:
+    known_headings = {
+        "EDUCATION",
+        "EXPERIENCE",
+        "WORK EXPERIENCE",
+        "PROJECTS",
+        "TECHNICAL SKILLS",
+        "SKILLS",
+        "LANGUAGES & SKILLS",
+        "CERTIFICATIONS",
+        "LEADERSHIP",
+        "ACTIVITIES",
+        "AWARDS",
+    }
+    sections: dict[str, list[str]] = {"CONTACT": []}
+    current_heading = "CONTACT"
+
+    for raw_line in resume.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        normalized = re.sub(r"\s+", " ", line.upper())
+        if normalized in known_headings:
+            current_heading = "TECHNICAL SKILLS" if normalized == "LANGUAGES & SKILLS" else normalized
+            sections.setdefault(current_heading, [current_heading])
+            continue
+
+        sections.setdefault(current_heading, [])
+        sections[current_heading].append(line)
+
+    return {heading: "\n".join(lines).strip() for heading, lines in sections.items()}
+
+
+def build_ai_tailored_resume(resume: str, job_description: str) -> str:
+    client = OpenAI(api_key=get_api_key())
+    response = client.chat.completions.create(
+        model=get_model(),
+        temperature=0.2,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert resume editor. Create a complete tailored resume draft "
+                    "for the target internship. Do not invent companies, dates, degrees, tools, "
+                    "certifications, metrics, or experience. Only reorganize and rewrite what is "
+                    "supported by the original resume. If a requested skill is missing, include it "
+                    "only as a suggested project or learning gap, not as claimed experience."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Original Resume:\n{resume}\n\nJob Description:\n{job_description}",
+            },
+        ],
+    )
+    return response.choices[0].message.content or ""
+
+
+def create_docx_download(resume_text: str) -> bytes:
+    document = Document()
+    for block in resume_text.split("\n\n"):
+        lines = [line for line in block.splitlines() if line.strip()]
+        if not lines:
+            continue
+        if lines[0].isupper() and len(lines[0]) < 60:
+            document.add_heading(lines[0], level=2)
+            lines = lines[1:]
+        for line in lines:
+            if line.startswith("- "):
+                document.add_paragraph(line[2:], style="List Bullet")
+            else:
+                document.add_paragraph(line)
+
+    output = BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+def create_pdf_download(resume_text: str) -> bytes:
+    output = BytesIO()
+    document = SimpleDocTemplate(
+        output,
+        pagesize=letter,
+        rightMargin=54,
+        leftMargin=54,
+        topMargin=54,
+        bottomMargin=54,
+    )
+    styles = getSampleStyleSheet()
+    story = []
+
+    for block in resume_text.split("\n\n"):
+        clean_block = block.strip()
+        if not clean_block:
+            continue
+        lines = clean_block.splitlines()
+        if lines and lines[0].isupper() and len(lines[0]) < 60:
+            story.append(Paragraph(lines[0], styles["Heading2"]))
+            body = "\n".join(lines[1:]).strip()
+            if body:
+                html_text = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                html_text = html_text.replace("\n", "<br/>")
+                story.append(Paragraph(html_text, styles["BodyText"]))
+        else:
+            html_text = clean_block.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            html_text = html_text.replace("\n", "<br/>")
+            story.append(Paragraph(html_text, styles["BodyText"]))
+        story.append(Spacer(1, 10))
+
+    document.build(story)
+    return output.getvalue()
 
 
 def read_uploaded_resume(uploaded_file: Any) -> str:
@@ -376,24 +540,79 @@ if analyze_clicked:
                     st.error(f"Analysis failed: {exc}")
                 st.stop()
 
-        score = int(result.get("match_score", 0))
-        strong_matches = result.get("strong_matches", [])
-        missing_keywords = result.get("missing_keywords", [])
-        suggestions = result.get("resume_suggestions", [])
-        tailored_bullets = result.get("tailored_bullets", [])
+        st.session_state.analysis_result = result
+        st.session_state.analysis_resume = resume_text
+        st.session_state.analysis_job_description = job_description
+        st.session_state.tailored_resume = ""
 
-        st.divider()
-        st.header(f"Match Score: {score}/100")
-        st.progress(max(0, min(score, 100)) / 100)
+if st.session_state.get("analysis_result"):
+    result = st.session_state.analysis_result
+    score = int(result.get("match_score", 0))
+    strong_matches = result.get("strong_matches", [])
+    missing_keywords = result.get("missing_keywords", [])
+    suggestions = result.get("resume_suggestions", [])
+    tailored_bullets = result.get("tailored_bullets", [])
 
-        st.subheader("Strong Matches")
-        render_list(strong_matches, "No strong matches found yet.")
+    st.divider()
+    st.header(f"Match Score: {score}/100")
+    st.progress(max(0, min(score, 100)) / 100)
 
-        st.subheader("Missing Keywords")
-        render_list(missing_keywords, "No major missing keywords found.")
+    st.subheader("Strong Matches")
+    render_list(strong_matches, "No strong matches found yet.")
 
-        st.subheader("Resume Suggestions")
-        render_list(suggestions, "No suggestions returned.")
+    st.subheader("Missing Keywords")
+    render_list(missing_keywords, "No major missing keywords found.")
 
-        st.subheader("Tailored Bullet Points")
-        render_list(tailored_bullets, "No tailored bullets returned.")
+    st.subheader("Resume Suggestions")
+    render_list(suggestions, "No suggestions returned.")
+
+    st.subheader("Tailored Bullet Points")
+    render_list(tailored_bullets, "No tailored bullets returned.")
+
+    st.subheader("Tailored Resume Draft")
+    if st.button("Generate Tailored Resume Draft", use_container_width=True):
+        with st.spinner("Creating a tailored resume draft..."):
+            try:
+                if use_demo_mode:
+                    tailored_resume = build_demo_tailored_resume(
+                        st.session_state.analysis_resume,
+                        st.session_state.analysis_job_description,
+                        result,
+                    )
+                else:
+                    tailored_resume = build_ai_tailored_resume(
+                        st.session_state.analysis_resume,
+                        st.session_state.analysis_job_description,
+                    )
+            except Exception as exc:
+                st.error(f"Could not generate tailored resume: {exc}")
+                st.stop()
+
+        st.session_state.tailored_resume = tailored_resume
+
+    if st.session_state.get("tailored_resume"):
+        st.text_area(
+            "Preview",
+            value=st.session_state.tailored_resume,
+            height=360,
+        )
+
+        docx_file = create_docx_download(st.session_state.tailored_resume)
+        pdf_file = create_pdf_download(st.session_state.tailored_resume)
+        left_column, right_column = st.columns(2)
+        with left_column:
+            st.download_button(
+                "Download Word",
+                data=docx_file,
+                file_name="tailored_resume.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+            )
+        with right_column:
+            st.download_button(
+                "Download PDF",
+                data=pdf_file,
+                file_name="tailored_resume.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
