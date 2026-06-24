@@ -13,6 +13,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
+from docx.text.paragraph import Paragraph as DocxParagraph
 from dotenv import load_dotenv
 from openai import OpenAI
 from pypdf import PdfReader
@@ -356,6 +357,77 @@ def create_docx_download(resume_text: str) -> bytes:
     return output.getvalue()
 
 
+def create_preserved_docx_download(original_docx: bytes, result: dict[str, Any]) -> bytes:
+    document = Document(BytesIO(original_docx))
+    strong_matches = result.get("strong_matches", [])
+    if not strong_matches:
+        output = BytesIO()
+        document.save(output)
+        return output.getvalue()
+
+    targeted_line = "Targeted Skills: " + ", ".join(strong_matches[:8])
+    if any("targeted skills:" in paragraph.text.lower() for paragraph in document.paragraphs):
+        output = BytesIO()
+        document.save(output)
+        return output.getvalue()
+
+    insert_after_index = find_skills_insert_index(document)
+    if insert_after_index is None:
+        paragraph = document.add_paragraph(targeted_line)
+    else:
+        source_paragraph = document.paragraphs[insert_after_index]
+        paragraph = insert_paragraph_after(source_paragraph, targeted_line)
+        copy_paragraph_style(source_paragraph, paragraph)
+
+    if paragraph.runs:
+        paragraph.runs[0].bold = False
+
+    output = BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+def find_skills_insert_index(document: Document) -> int | None:
+    skills_headings = {"technical skills", "skills", "languages & skills"}
+    current_section = ""
+    last_skills_paragraph_index = None
+
+    for index, paragraph in enumerate(document.paragraphs):
+        text = paragraph.text.strip()
+        if not text:
+            continue
+        normalized = re.sub(r"\s+", " ", text.lower())
+        if normalized in skills_headings:
+            current_section = normalized
+            last_skills_paragraph_index = index
+            continue
+        if current_section and text.isupper() and len(text) < 60:
+            break
+        if current_section:
+            last_skills_paragraph_index = index
+
+    return last_skills_paragraph_index
+
+
+def insert_paragraph_after(paragraph: Any, text: str) -> Any:
+    new_paragraph = OxmlElement("w:p")
+    paragraph._p.addnext(new_paragraph)
+    inserted = DocxParagraph(new_paragraph, paragraph._parent)
+    inserted.add_run(text)
+    return inserted
+
+
+def copy_paragraph_style(source: Any, target: Any) -> None:
+    target.style = source.style
+    target.alignment = source.alignment
+    target.paragraph_format.left_indent = source.paragraph_format.left_indent
+    target.paragraph_format.right_indent = source.paragraph_format.right_indent
+    target.paragraph_format.first_line_indent = source.paragraph_format.first_line_indent
+    target.paragraph_format.space_before = source.paragraph_format.space_before
+    target.paragraph_format.space_after = source.paragraph_format.space_after
+    target.paragraph_format.line_spacing = source.paragraph_format.line_spacing
+
+
 def add_bottom_border(paragraph: Any) -> None:
     paragraph_properties = paragraph._p.get_or_add_pPr()
     border = OxmlElement("w:pBdr")
@@ -458,6 +530,7 @@ def read_uploaded_resume(uploaded_file: Any) -> str:
     if uploaded_file is None:
         return ""
 
+    uploaded_file.seek(0)
     raw = uploaded_file.read()
     file_name = uploaded_file.name.lower()
 
@@ -478,6 +551,14 @@ def read_uploaded_resume(uploaded_file: Any) -> str:
             return raw.decode("latin-1", errors="ignore")
 
     return ""
+
+
+def get_uploaded_resume_bytes(uploaded_file: Any) -> bytes:
+    if uploaded_file is None:
+        return b""
+
+    uploaded_file.seek(0)
+    return uploaded_file.read()
 
 
 def extract_job_description_from_url(url: str) -> str:
@@ -565,6 +646,11 @@ st.info("For the cleanest tailored resume, upload the Word .docx version. PDF re
 resume_from_file = ""
 if uploaded_resume is not None:
     try:
+        if uploaded_resume.name.lower().endswith(".docx"):
+            st.session_state.original_docx_bytes = get_uploaded_resume_bytes(uploaded_resume)
+        else:
+            st.session_state.original_docx_bytes = b""
+
         resume_from_file = read_uploaded_resume(uploaded_resume)
         if uploaded_resume.name.lower().endswith(".pdf"):
             st.warning("PDF uploaded: I can extract the text, but a Word .docx version is better for precise resume editing.")
@@ -647,6 +733,7 @@ if analyze_clicked:
         st.session_state.analysis_result = result
         st.session_state.analysis_resume = resume_text
         st.session_state.analysis_job_description = job_description
+        st.session_state.analysis_original_docx_bytes = st.session_state.get("original_docx_bytes", b"")
         st.session_state.tailored_resume = ""
 
 if st.session_state.get("analysis_result"):
@@ -701,7 +788,12 @@ if st.session_state.get("analysis_result"):
             height=360,
         )
 
-        docx_file = create_docx_download(st.session_state.tailored_resume)
+        original_docx = st.session_state.get("analysis_original_docx_bytes", b"")
+        if original_docx:
+            docx_file = create_preserved_docx_download(original_docx, result)
+            st.caption("Word download preserves the uploaded .docx formatting and applies a conservative targeted update.")
+        else:
+            docx_file = create_docx_download(st.session_state.tailored_resume)
         pdf_file = create_pdf_download(st.session_state.tailored_resume)
         left_column, right_column = st.columns(2)
         with left_column:
