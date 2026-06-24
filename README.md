@@ -6,6 +6,7 @@ A simple Streamlit web tool for comparing a resume against an internship job des
 
 Upload a PDF or Word resume, then paste a job posting URL or job description.
 You can also paste resume text manually.
+For the cleanest tailored resume export, upload a Word `.docx` file. PDF upload works for text extraction, but exact layout editing is harder.
 
 The tool returns:
 
@@ -29,7 +30,7 @@ For stronger AI feedback, turn off Demo Mode in the sidebar and add an OpenAI AP
 
 After analyzing a resume and job description, click **Generate Tailored Resume Draft**.
 The app creates a resume-style tailored draft and lets you download it as `.docx` or `.pdf`.
-Demo Mode keeps the original resume structure and adds targeted summary/highlight sections.
+Demo Mode uses a compact resume template and keeps changes conservative to avoid adding unnecessary pages.
 
 ## Setup
 
