@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from html import escape
 from io import BytesIO
 from typing import Any
 
@@ -8,12 +9,18 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Inches, Pt
 from dotenv import load_dotenv
 from openai import OpenAI
 from pypdf import PdfReader
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer
 
 
 load_dotenv()
@@ -194,10 +201,7 @@ def demo_analyze_resume(resume: str, job_description: str) -> dict[str, Any]:
 
 def build_demo_tailored_resume(resume: str, job_description: str, result: dict[str, Any]) -> str:
     strong_matches = result.get("strong_matches", [])
-    tailored_bullets = result.get("tailored_bullets", [])
-
     skills_line = ", ".join(strong_matches) if strong_matches else "Relevant technical and collaboration skills"
-    jd_keywords = ", ".join(title_keyword(keyword) for keyword in extract_keywords(job_description)[:8])
     sections = parse_resume_sections(resume)
     contact = sections["CONTACT"]
 
@@ -205,33 +209,27 @@ def build_demo_tailored_resume(resume: str, job_description: str, result: dict[s
     if contact:
         output_sections.append(contact)
 
-    output_sections.append(
-        "\n".join(
-            [
-                "PROFESSIONAL SUMMARY",
-                (
-                    f"Computer Science student with experience related to {skills_line}. "
-                    f"Prepared to contribute to internship work involving "
-                    f"{jd_keywords or 'technical problem solving, documentation, and teamwork'}."
-                ),
-            ]
-        )
-    )
-
-    for heading in ["EDUCATION", "TECHNICAL SKILLS", "SKILLS", "PROJECTS", "EXPERIENCE", "WORK EXPERIENCE"]:
+    ordered_headings = [
+        "EDUCATION",
+        "INTERNSHIP EXPERIENCE",
+        "WORK EXPERIENCE",
+        "EXPERIENCE",
+        "PROJECT EXPERIENCE",
+        "PROJECTS",
+        "TECHNICAL SKILLS",
+        "SKILLS",
+    ]
+    for heading in ordered_headings:
         if heading in sections and sections[heading]:
             if heading in {"TECHNICAL SKILLS", "SKILLS"} and strong_matches:
                 section_text = sections[heading]
-                section_text += f"\nTargeted Skills: {skills_line}"
+                if "targeted skills" not in section_text.lower():
+                    section_text += f"\nTargeted Skills: {skills_line}"
                 output_sections.append(section_text)
             else:
                 output_sections.append(sections[heading])
 
-    if tailored_bullets:
-        bullets = "\n".join(f"- {bullet}" for bullet in tailored_bullets[:3])
-        output_sections.append(f"TARGETED HIGHLIGHTS\n{bullets}")
-
-    used_sections = {"CONTACT", "EDUCATION", "TECHNICAL SKILLS", "SKILLS", "PROJECTS", "EXPERIENCE", "WORK EXPERIENCE"}
+    used_sections = {"CONTACT", *ordered_headings}
     for heading, text in sections.items():
         if heading not in used_sections and text:
             output_sections.append(text)
@@ -242,8 +240,10 @@ def build_demo_tailored_resume(resume: str, job_description: str, result: dict[s
 def parse_resume_sections(resume: str) -> dict[str, str]:
     known_headings = {
         "EDUCATION",
+        "INTERNSHIP EXPERIENCE",
         "EXPERIENCE",
         "WORK EXPERIENCE",
+        "PROJECT EXPERIENCE",
         "PROJECTS",
         "TECHNICAL SKILLS",
         "SKILLS",
@@ -300,22 +300,72 @@ def build_ai_tailored_resume(resume: str, job_description: str) -> str:
 
 def create_docx_download(resume_text: str) -> bytes:
     document = Document()
-    for block in resume_text.split("\n\n"):
+    section = document.sections[0]
+    section.top_margin = Inches(0.45)
+    section.bottom_margin = Inches(0.45)
+    section.left_margin = Inches(0.55)
+    section.right_margin = Inches(0.55)
+
+    normal_style = document.styles["Normal"]
+    normal_style.font.name = "Times New Roman"
+    normal_style.font.size = Pt(10)
+
+    for block_index, block in enumerate(resume_text.split("\n\n")):
         lines = [line for line in block.splitlines() if line.strip()]
         if not lines:
             continue
+
+        if block_index == 0:
+            for line_index, line in enumerate(lines):
+                paragraph = document.add_paragraph()
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                paragraph.paragraph_format.space_after = Pt(0)
+                paragraph.paragraph_format.line_spacing = 1
+                run = paragraph.add_run(line)
+                run.font.name = "Times New Roman"
+                run.font.size = Pt(12 if line_index == 0 else 9)
+                run.bold = line_index == 0
+            continue
+
         if lines[0].isupper() and len(lines[0]) < 60:
-            document.add_heading(lines[0], level=2)
+            heading = document.add_paragraph()
+            heading.paragraph_format.space_before = Pt(6)
+            heading.paragraph_format.space_after = Pt(1)
+            heading_run = heading.add_run(lines[0])
+            heading_run.bold = True
+            heading_run.font.name = "Times New Roman"
+            heading_run.font.size = Pt(11)
+            add_bottom_border(heading)
             lines = lines[1:]
         for line in lines:
             if line.startswith("- "):
-                document.add_paragraph(line[2:], style="List Bullet")
+                paragraph = document.add_paragraph(style="List Bullet")
+                paragraph.paragraph_format.space_after = Pt(0)
+                paragraph.paragraph_format.line_spacing = 1
+                run = paragraph.add_run(line[2:])
             else:
-                document.add_paragraph(line)
+                paragraph = document.add_paragraph()
+                paragraph.paragraph_format.space_after = Pt(0)
+                paragraph.paragraph_format.line_spacing = 1
+                run = paragraph.add_run(line)
+            run.font.name = "Times New Roman"
+            run.font.size = Pt(9.5)
 
     output = BytesIO()
     document.save(output)
     return output.getvalue()
+
+
+def add_bottom_border(paragraph: Any) -> None:
+    paragraph_properties = paragraph._p.get_or_add_pPr()
+    border = OxmlElement("w:pBdr")
+    bottom = OxmlElement("w:bottom")
+    bottom.set(qn("w:val"), "single")
+    bottom.set(qn("w:sz"), "6")
+    bottom.set(qn("w:space"), "1")
+    bottom.set(qn("w:color"), "000000")
+    border.append(bottom)
+    paragraph_properties.append(border)
 
 
 def create_pdf_download(resume_text: str) -> bytes:
@@ -323,34 +373,85 @@ def create_pdf_download(resume_text: str) -> bytes:
     document = SimpleDocTemplate(
         output,
         pagesize=letter,
-        rightMargin=54,
-        leftMargin=54,
-        topMargin=54,
-        bottomMargin=54,
+        rightMargin=40,
+        leftMargin=40,
+        topMargin=32,
+        bottomMargin=32,
     )
-    styles = getSampleStyleSheet()
+    contact_name_style = ParagraphStyle(
+        "ContactName",
+        fontName="Times-Bold",
+        fontSize=14,
+        leading=15,
+        alignment=TA_CENTER,
+        spaceAfter=0,
+    )
+    contact_style = ParagraphStyle(
+        "Contact",
+        fontName="Times-Roman",
+        fontSize=9,
+        leading=10,
+        alignment=TA_CENTER,
+        spaceAfter=4,
+    )
+    heading_style = ParagraphStyle(
+        "ResumeHeading",
+        fontName="Times-Bold",
+        fontSize=10.5,
+        leading=11,
+        spaceBefore=6,
+        spaceAfter=0,
+    )
+    body_style = ParagraphStyle(
+        "ResumeBody",
+        fontName="Times-Roman",
+        fontSize=9.2,
+        leading=10.2,
+        spaceAfter=0,
+    )
+    bullet_style = ParagraphStyle(
+        "ResumeBullet",
+        parent=body_style,
+        leftIndent=14,
+        firstLineIndent=-7,
+    )
     story = []
 
-    for block in resume_text.split("\n\n"):
+    for block_index, block in enumerate(resume_text.split("\n\n")):
         clean_block = block.strip()
         if not clean_block:
             continue
         lines = clean_block.splitlines()
+
+        if block_index == 0:
+            if lines:
+                story.append(Paragraph(escape(lines[0]), contact_name_style))
+            if len(lines) > 1:
+                story.append(Paragraph(escape(" | ".join(lines[1:])), contact_style))
+            continue
+
         if lines and lines[0].isupper() and len(lines[0]) < 60:
-            story.append(Paragraph(lines[0], styles["Heading2"]))
-            body = "\n".join(lines[1:]).strip()
-            if body:
-                html_text = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                html_text = html_text.replace("\n", "<br/>")
-                story.append(Paragraph(html_text, styles["BodyText"]))
+            story.append(Paragraph(escape(lines[0]), heading_style))
+            story.append(HRFlowable(width="100%", thickness=0.6, color=colors.black, spaceBefore=0, spaceAfter=2))
+            render_resume_lines(story, lines[1:], body_style, bullet_style)
         else:
-            html_text = clean_block.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            html_text = html_text.replace("\n", "<br/>")
-            story.append(Paragraph(html_text, styles["BodyText"]))
-        story.append(Spacer(1, 10))
+            render_resume_lines(story, lines, body_style, bullet_style)
+        story.append(Spacer(1, 4))
 
     document.build(story)
     return output.getvalue()
+
+
+def render_resume_lines(story: list[Any], lines: list[str], body_style: ParagraphStyle, bullet_style: ParagraphStyle) -> None:
+    for line in lines:
+        clean_line = line.strip()
+        if not clean_line:
+            continue
+        if clean_line.startswith("- ") or clean_line[:1] in {"\u2022", "\u00b7"}:
+            bullet_text = clean_line[2:].strip() if clean_line.startswith("- ") else clean_line[1:].strip()
+            story.append(Paragraph(f"&bull; {escape(bullet_text)}", bullet_style))
+        else:
+            story.append(Paragraph(escape(clean_line), body_style))
 
 
 def read_uploaded_resume(uploaded_file: Any) -> str:
@@ -457,13 +558,16 @@ st.subheader("1. Upload or Paste Resume")
 uploaded_resume = st.file_uploader(
     "Upload resume",
     type=["pdf", "docx", "txt"],
-    help="PDF and Word resumes work best. TXT is supported as a fallback.",
+    help="Upload a Word .docx for the best formatting preservation. PDF works for text extraction, but not perfect layout editing.",
 )
+st.info("For the cleanest tailored resume, upload the Word .docx version. PDF resumes can be read, but exact formatting is harder to preserve.")
 
 resume_from_file = ""
 if uploaded_resume is not None:
     try:
         resume_from_file = read_uploaded_resume(uploaded_resume)
+        if uploaded_resume.name.lower().endswith(".pdf"):
+            st.warning("PDF uploaded: I can extract the text, but a Word .docx version is better for precise resume editing.")
         if not resume_from_file:
             st.warning("I could not extract text from this file. Try pasting the resume text below.")
     except Exception as exc:
