@@ -14,6 +14,7 @@ The tool returns:
 - Missing keywords
 - Resume improvement suggestions
 - Tailored bullet points for the target role
+- Tailored resume draft with Word and PDF downloads
 
 Some job boards block automatic page extraction. If a URL cannot be read, paste the job description manually.
 
@@ -23,6 +24,12 @@ Demo Mode is turned on by default and does not require an OpenAI API key.
 It uses keyword matching to generate a free resume-to-job analysis.
 
 For stronger AI feedback, turn off Demo Mode in the sidebar and add an OpenAI API key.
+
+## Tailored Resume Export
+
+After analyzing a resume and job description, click **Generate Tailored Resume Draft**.
+The app creates a resume-style tailored draft and lets you download it as `.docx` or `.pdf`.
+Demo Mode keeps the original resume structure and adds targeted summary/highlight sections.
 
 ## Setup
 
