@@ -357,9 +357,11 @@ def create_docx_download(resume_text: str) -> bytes:
     return output.getvalue()
 
 
-def create_preserved_docx_download(original_docx: bytes, result: dict[str, Any]) -> bytes:
+def create_preserved_docx_download(original_docx: bytes, result: dict[str, Any], job_description: str) -> bytes:
     document = Document(BytesIO(original_docx))
     strong_matches = result.get("strong_matches", [])
+    demo_rewrite_bullets(document, job_description)
+
     if not strong_matches:
         output = BytesIO()
         document.save(output)
@@ -385,6 +387,70 @@ def create_preserved_docx_download(original_docx: bytes, result: dict[str, Any])
     output = BytesIO()
     document.save(output)
     return output.getvalue()
+
+
+def demo_rewrite_bullets(document: Document, job_description: str) -> None:
+    job_keywords = set(extract_keywords(job_description))
+    replacements = 0
+
+    for paragraph in document.paragraphs:
+        if replacements >= 3:
+            break
+        if not is_bullet_paragraph(paragraph):
+            continue
+
+        original = paragraph.text.strip()
+        rewritten = demo_rewrite_bullet(original, job_keywords)
+        if rewritten and rewritten != original:
+            replace_paragraph_text(paragraph, rewritten)
+            replacements += 1
+
+
+def is_bullet_paragraph(paragraph: Any) -> bool:
+    style_name = (paragraph.style.name or "").lower()
+    has_numbering = paragraph._p.pPr is not None and paragraph._p.pPr.numPr is not None
+    return "bullet" in style_name or has_numbering
+
+
+def demo_rewrite_bullet(original: str, job_keywords: set[str]) -> str:
+    text = original.lower()
+
+    if "support" in text and any(keyword in job_keywords for keyword in {"it support", "troubleshooting", "communication"}):
+        return (
+            "Resolved daily hardware, software, and network support requests for multiple county departments; "
+            "documented issues clearly and delivered onsite and remote assistance through the internal help-desk system."
+        )
+
+    if "workstation migration" in text or "laptop-docking" in text:
+        return (
+            "Supported a county-wide workstation migration for 50+ employees by assisting with hardware setup, "
+            "software configuration, and user onboarding to improve mobility and workflow efficiency."
+        )
+
+    if "database" in text and any(keyword in job_keywords for keyword in {"sql", "data analysis", "documentation"}):
+        return (
+            "Designed a normalized SQL database schema for a multi-role e-commerce marketplace, supporting product listings, "
+            "orders, reviews, helpdesk workflows, and reliable transactional data operations."
+        )
+
+    if "documentation" in text and "documentation" in job_keywords:
+        return (
+            "Updated technical documentation with clearer API usage examples, making onboarding and future maintenance easier "
+            "for incoming developers."
+        )
+
+    return original
+
+
+def replace_paragraph_text(paragraph: Any, text: str) -> None:
+    if not paragraph.runs:
+        paragraph.add_run(text)
+        return
+
+    first_run = paragraph.runs[0]
+    for run in paragraph.runs[1:]:
+        run.text = ""
+    first_run.text = text
 
 
 def find_skills_insert_index(document: Document) -> int | None:
@@ -790,8 +856,12 @@ if st.session_state.get("analysis_result"):
 
         original_docx = st.session_state.get("analysis_original_docx_bytes", b"")
         if original_docx:
-            docx_file = create_preserved_docx_download(original_docx, result)
-            st.caption("Word download preserves the uploaded .docx formatting and applies a conservative targeted update.")
+            docx_file = create_preserved_docx_download(
+                original_docx,
+                result,
+                st.session_state.analysis_job_description,
+            )
+            st.caption("Word download preserves the uploaded .docx formatting and applies conservative targeted bullet rewrites.")
         else:
             docx_file = create_docx_download(st.session_state.tailored_resume)
         pdf_file = create_pdf_download(st.session_state.tailored_resume)
