@@ -32,7 +32,7 @@ After analyzing a resume and job description, click **Generate Tailored Resume D
 The app creates a resume-style tailored draft and lets you download it as `.docx` or `.pdf`.
 Demo Mode uses a compact resume template and keeps changes conservative to avoid adding unnecessary pages.
 
-When the uploaded resume is a Word `.docx`, the Word download preserves the original document formatting and applies a conservative targeted update. PDF downloads still use the app's compact resume template.
+When the uploaded resume is a Word `.docx`, the Word download preserves the original document formatting and applies conservative targeted bullet rewrites. PDF downloads still use the app's compact resume template.
 
 ## Setup
 
